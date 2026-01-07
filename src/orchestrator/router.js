@@ -62,7 +62,7 @@ const toolHandlers = {
     }
   },
 
-  // Step 2: Show items in a category - FROM DATABASE
+  // Step 2: Show items in a category - FROM DATABASE (IMPROVED: No images, just list for faster selection)
   show_category_items: async (args, userId, context) => {
     try {
       const category = args.category || 'momos';
@@ -73,52 +73,36 @@ const toolHandlers = {
         return await toolHandlers.show_food_menu({}, userId, context);
       }
 
-      // Send intro message
-      await sendWhatsAppMessage(userId, `🍽️ *${category.toUpperCase()} Menu*\n\nHere are our delicious options:`);
-
-      const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-      // Send each item with image if available
-      for (const food of foods) {
-        if (food.image_url) {
-          await sendWhatsAppImageMessage(
-            userId,
-            food.image_url,
-            `*${food.name}* - Rs.${food.price}\n${food.description || ''}`
-          );
-        } else {
-          await sendWhatsAppMessage(
-            userId,
-            `*${food.name}* - Rs.${food.price}\n${food.description || ''}`
-          );
-        }
-        await delay(300);
-      }
-
-      await delay(500);
-
-      // Build selection list
+      // Build selection list with prices - NO images for faster selection
       const rows = foods.map(food => ({
         id: `add_${food.id}`,
         title: food.name.substring(0, 24), // WhatsApp limit
-        description: `Rs.${food.price}`
+        description: `Rs.${food.price} - ${(food.description || '').substring(0, 50)}`
       }));
 
       // Split into sections if needed (WhatsApp has 10 row limit per section)
       const sections = [];
       for (let i = 0; i < rows.length; i += 10) {
         sections.push({
-          title: i === 0 ? `Select ${category}` : `More ${category}`,
+          title: i === 0 ? `${category.charAt(0).toUpperCase() + category.slice(1)}` : `More ${category}`,
           rows: rows.slice(i, i + 10)
         });
       }
 
+      // Show current cart summary if items exist
+      const cart = context.cart || [];
+      let bodyText = `Select items to add to your cart.\nTap an item to add it.`;
+      if (cart.length > 0) {
+        const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        bodyText = `🛒 Cart: ${cart.length} item(s) - Rs.${total}\n\nSelect more items to add:`;
+      }
+
       await sendWhatsAppListMessage(
         userId,
-        `🛒 Add to Cart`,
-        'Choose an item to add to your cart. You can add multiple items!',
-        'Tap to select',
-        'Choose Item',
+        `🍽️ ${category.toUpperCase()} Menu`,
+        bodyText,
+        'Tap item to add to cart',
+        'View Items',
         sections
       );
 
@@ -144,7 +128,7 @@ const toolHandlers = {
     return await toolHandlers.show_category_items({ category: 'momos' }, userId, context);
   },
 
-  // Add item to cart - uses database to get item details
+  // Add item to cart - uses database to get item details (IMPROVED: Quick add with quantity options)
   add_to_cart: async (args, userId, context) => {
     try {
       const foodId = args.foodId;
@@ -172,9 +156,53 @@ const toolHandlers = {
         });
       }
 
-      await sendWhatsAppMessage(userId, `✅ Added *${food.name}* x${quantity} to your cart!`);
+      // Calculate cart total
+      const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const itemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-      return await toolHandlers.show_cart_options({}, userId, { ...context, cart });
+      // Show quick action buttons - makes adding more items much easier!
+      const buttons = [
+        {
+          type: 'reply',
+          reply: {
+            id: `more_${context.currentCategory || 'momos'}`,
+            title: 'Add More ➕'
+          }
+        },
+        {
+          type: 'reply',
+          reply: {
+            id: 'view_all_categories',
+            title: 'Other Categories 📋'
+          }
+        },
+        {
+          type: 'reply',
+          reply: {
+            id: 'proceed_checkout',
+            title: 'Checkout 🛒'
+          }
+        }
+      ];
+
+      await sendWhatsAppButtonMessage(
+        userId,
+        '✅ Added to Cart!',
+        `*${food.name}* x${quantity} - Rs.${food.price * quantity}\n\n🛒 Cart: ${itemCount} item(s) | Total: Rs.${total}\n\nWhat would you like to do?`,
+        'Keep adding or checkout!',
+        buttons
+      );
+
+      return {
+        reply: null,
+        updatedContext: { 
+          ...context, 
+          cart,
+          stage: 'quick_cart_action',
+          lastAddedItem: food.name,
+          lastAction: 'add_to_cart'
+        }
+      };
     } catch (error) {
       console.error('Error adding to cart:', error);
       await sendWhatsAppMessage(userId, "Sorry, couldn't add that item. Please try again.");
@@ -446,6 +474,17 @@ async function routeIntent({ text, context, userId, interactiveReply }) {
 
     // User wants to add more items
     if (id === 'add_more_items') {
+      return await toolHandlers.show_food_menu({}, userId, context);
+    }
+
+    // Quick add more from same category (new flow)
+    if (id.startsWith('more_')) {
+      const category = id.replace('more_', '');
+      return await toolHandlers.show_category_items({ category }, userId, context);
+    }
+
+    // View all categories (new flow)
+    if (id === 'view_all_categories') {
       return await toolHandlers.show_food_menu({}, userId, context);
     }
 
