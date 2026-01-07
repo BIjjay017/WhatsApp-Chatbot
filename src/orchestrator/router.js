@@ -210,6 +210,124 @@ const toolHandlers = {
     }
   },
 
+  // Add item by name - validates against database before adding
+  add_item_by_name: async (args, userId, context) => {
+    try {
+      const itemName = args.name || args.itemName || '';
+      const quantity = args.quantity || 1;
+      const cart = context.cart || [];
+
+      if (!itemName) {
+        await sendWhatsAppMessage(userId, "Please specify which item you want to add.");
+        return { reply: null, updatedContext: context };
+      }
+
+      // Search for the item in database
+      const matchingItems = await restaurantTools.getFoodByName(itemName);
+
+      if (matchingItems.length === 0) {
+        // Item not found - show helpful message
+        await sendWhatsAppMessage(
+          userId,
+          `❌ Sorry, "${itemName}" is not available on our menu.\n\nType "menu" to see what we have! 🍽️`
+        );
+        return { reply: null, updatedContext: context };
+      }
+
+      if (matchingItems.length === 1) {
+        // Exact match - add directly
+        const food = matchingItems[0];
+        
+        const existingItem = cart.find(item => item.foodId === food.id);
+        if (existingItem) {
+          existingItem.quantity += quantity;
+        } else {
+          cart.push({
+            foodId: food.id,
+            name: food.name,
+            price: parseFloat(food.price),
+            quantity
+          });
+        }
+
+        const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        const itemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+        const buttons = [
+          {
+            type: 'reply',
+            reply: {
+              id: `more_${food.category || 'momos'}`,
+              title: 'Add More ➕'
+            }
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'view_all_categories',
+              title: 'Other Categories 📋'
+            }
+          },
+          {
+            type: 'reply',
+            reply: {
+              id: 'proceed_checkout',
+              title: 'Checkout 🛒'
+            }
+          }
+        ];
+
+        await sendWhatsAppButtonMessage(
+          userId,
+          '✅ Added to Cart!',
+          `*${food.name}* x${quantity} - Rs.${food.price * quantity}\n\n🛒 Cart: ${itemCount} item(s) | Total: Rs.${total}\n\nWhat would you like to do?`,
+          'Keep adding or checkout!',
+          buttons
+        );
+
+        return {
+          reply: null,
+          updatedContext: { 
+            ...context, 
+            cart,
+            stage: 'quick_cart_action',
+            lastAddedItem: food.name,
+            lastAction: 'add_item_by_name'
+          }
+        };
+      }
+
+      // Multiple matches - show options
+      const rows = matchingItems.slice(0, 10).map(food => ({
+        id: `add_${food.id}`,
+        title: food.name.substring(0, 24),
+        description: `Rs.${food.price} - ${(food.description || '').substring(0, 50)}`
+      }));
+
+      await sendWhatsAppListMessage(
+        userId,
+        '🔍 Multiple Matches Found',
+        `Found ${matchingItems.length} item(s) matching "${itemName}".\nSelect the one you want:`,
+        'Tap to add to cart',
+        'Select Item',
+        [{ title: 'Matching Items', rows }]
+      );
+
+      return {
+        reply: null,
+        updatedContext: { 
+          ...context, 
+          stage: 'selecting_item',
+          lastAction: 'add_item_by_name'
+        }
+      };
+    } catch (error) {
+      console.error('Error adding item by name:', error);
+      await sendWhatsAppMessage(userId, "Sorry, couldn't find that item. Try browsing our menu!");
+      return { reply: null, updatedContext: context };
+    }
+  },
+
   // Show cart and checkout options
   show_cart_options: async (args, userId, context) => {
     const cart = context.cart || [];
@@ -261,12 +379,73 @@ const toolHandlers = {
 
   // Confirm order with payment options
   confirm_order: async (args, userId, context) => {
-    const items = args.items || context.cart || [];
+    let items = args.items || context.cart || [];
     
     if (items.length === 0) {
       await sendWhatsAppMessage(userId, "Your cart is empty! Let me show you our menu.");
       return await toolHandlers.show_food_menu({}, userId, context);
     }
+
+    // VALIDATE ITEMS AGAINST DATABASE - filter out items that don't exist
+    const validatedItems = [];
+    const invalidItems = [];
+
+    for (const item of items) {
+      // If item has foodId, validate by ID
+      if (item.foodId) {
+        const dbItem = await restaurantTools.getFoodById(item.foodId);
+        if (dbItem) {
+          validatedItems.push({
+            foodId: dbItem.id,
+            name: dbItem.name,
+            price: parseFloat(dbItem.price),
+            quantity: item.quantity || 1
+          });
+        } else {
+          invalidItems.push(item.name);
+        }
+      } else {
+        // Item from LLM - validate by name
+        const matches = await restaurantTools.getFoodByName(item.name);
+        if (matches.length > 0) {
+          // Use the first exact or closest match
+          const dbItem = matches[0];
+          const existingValid = validatedItems.find(v => v.foodId === dbItem.id);
+          if (existingValid) {
+            existingValid.quantity += item.quantity || 1;
+          } else {
+            validatedItems.push({
+              foodId: dbItem.id,
+              name: dbItem.name,
+              price: parseFloat(dbItem.price), // Use DB price, not LLM-generated
+              quantity: item.quantity || 1
+            });
+          }
+        } else {
+          invalidItems.push(item.name);
+        }
+      }
+    }
+
+    // If no valid items after validation
+    if (validatedItems.length === 0) {
+      await sendWhatsAppMessage(
+        userId,
+        `❌ Sorry, none of the items are available:\n${invalidItems.map(n => `• ${n}`).join('\n')}\n\nType "menu" to see what we have! 🍽️`
+      );
+      return await toolHandlers.show_food_menu({}, userId, context);
+    }
+
+    // Notify about invalid items if any
+    if (invalidItems.length > 0) {
+      await sendWhatsAppMessage(
+        userId,
+        `⚠️ Note: These items are not available and were removed:\n${invalidItems.map(n => `• ${n}`).join('\n')}`
+      );
+    }
+
+    // Use validated items
+    items = validatedItems;
 
     const orderLines = items.map(item => 
       `• ${item.name} x${item.quantity} - Rs.${item.price * item.quantity}`
@@ -281,6 +460,7 @@ const toolHandlers = {
       reply: null,
       updatedContext: { 
         ...context, 
+        cart: items, // Update cart with validated items
         stage: 'confirming_order',
         lastAction: 'confirm_order',
         pendingOrder: { items, total }

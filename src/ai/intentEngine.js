@@ -29,25 +29,33 @@ const availableTools = [
   {
     type: "function",
     function: {
-      name: "confirm_order",
-      description: "Show order confirmation with confirm and cancel buttons. Use this when user has selected items and wants to place/confirm their order.",
+      name: "add_item_by_name",
+      description: "Add an item to cart by name. Use this when user wants to add a specific item by typing its name (e.g., 'add momo', 'I want tandoori momo', 'add 2 steam momo'). This validates the item against the menu before adding.",
       parameters: {
         type: "object",
         properties: {
-          items: {
-            type: "array",
-            description: "List of items the user wants to order",
-            items: {
-              type: "object",
-              properties: {
-                name: { type: "string" },
-                quantity: { type: "number" },
-                price: { type: "number" }
-              }
-            }
+          name: {
+            type: "string",
+            description: "The name of the food item to add"
+          },
+          quantity: {
+            type: "number",
+            description: "Quantity to add (default 1)"
           }
         },
-        required: ["items"]
+        required: ["name"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "confirm_order",
+      description: "Show order confirmation with confirm and cancel buttons. ONLY use this when user explicitly says 'checkout', 'place order', 'confirm order', or clicks checkout. Do NOT use this when user is adding items.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: []
       }
     }
   },
@@ -110,9 +118,17 @@ You are an AI assistant for Momo House restaurant chatbot.
 CONVERSATION FLOW:
 1. When user wants to see menu → call show_food_menu (shows list of food categories)
 2. When user selects "Momos" or asks about momos → call show_momo_varieties (shows momo carousel)
-3. When user selects items to order or says "order" → call confirm_order with the items
-4. When user confirms/cancels order → call process_order_response
-5. When user asks about their orders, order history, past orders → call show_order_history
+3. When user wants to ADD an item by name (e.g., "add momo", "I want tandoori", "add 2 steam momo") → call add_item_by_name with the item name
+4. When user explicitly wants to CHECKOUT/PLACE ORDER (e.g., "checkout", "place order", "confirm", "that's all") → call confirm_order (NO items parameter needed)
+5. When user confirms/cancels order → call process_order_response
+6. When user asks about their orders, order history, past orders → call show_order_history
+
+IMPORTANT RULES:
+- When user says "add X" or "I want X" → use add_item_by_name with the item name, NOT confirm_order
+- NEVER invent prices - the database will provide correct prices
+- NEVER use confirm_order just to add more items
+- For confirm_order, do NOT pass any items - the cart is managed separately
+- Only use confirm_order when user wants to finalize/checkout
 
 CONTEXT AWARENESS:
 - Current conversation state: ${JSON.stringify(conversationContext)}
@@ -122,7 +138,6 @@ RULES:
 - Be concise and friendly
 - Use the appropriate tool for each step
 - For greetings or general chat, use send_text_reply
-- Track what items user has shown interest in
 `;
 
   const userPrompt = `User message: "${userMessage}"`;
@@ -130,7 +145,7 @@ RULES:
   try {
     const completion = await groq().chat.completions.create({
       model: "llama-3.3-70b-versatile",
-      temperature: 0.2,
+      temperature: 0.1,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
