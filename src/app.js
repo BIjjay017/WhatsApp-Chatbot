@@ -189,6 +189,122 @@ app.get('/update-images', async (req, res) => {
 });
 
 /* ======================
+   DATABASE VIEWER ENDPOINTS
+   View all data in the database
+====================== */
+
+// View all foods
+app.get('/db/foods', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM foods ORDER BY category, id');
+    res.json({
+      success: true,
+      count: result.rows.length,
+      foods: result.rows
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// View all orders
+app.get('/db/orders', async (req, res) => {
+  try {
+    const orders = await db.query('SELECT * FROM orders ORDER BY created_at DESC');
+    res.json({
+      success: true,
+      count: orders.rows.length,
+      orders: orders.rows
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// View order details with items
+app.get('/db/orders/:id', async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const order = await db.query('SELECT * FROM orders WHERE id = $1', [orderId]);
+    const items = await db.query(`
+      SELECT oi.*, f.name, f.price, f.category 
+      FROM order_items oi 
+      JOIN foods f ON oi.food_id = f.id 
+      WHERE oi.order_id = $1
+    `, [orderId]);
+    
+    if (order.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+
+    res.json({
+      success: true,
+      order: order.rows[0],
+      items: items.rows,
+      total: items.rows.reduce((sum, item) => sum + (parseFloat(item.price) * item.quantity), 0)
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// View all order items
+app.get('/db/order-items', async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT oi.*, f.name as food_name, f.price, o.user_wa_id, o.status 
+      FROM order_items oi 
+      JOIN foods f ON oi.food_id = f.id 
+      JOIN orders o ON oi.order_id = o.id 
+      ORDER BY oi.created_at DESC
+    `);
+    res.json({
+      success: true,
+      count: result.rows.length,
+      items: result.rows
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Database summary dashboard
+app.get('/db', async (req, res) => {
+  try {
+    const foods = await db.query('SELECT COUNT(*) as count FROM foods');
+    const orders = await db.query('SELECT COUNT(*) as count FROM orders');
+    const orderItems = await db.query('SELECT COUNT(*) as count FROM order_items');
+    const recentOrders = await db.query(`
+      SELECT o.*, 
+        (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count,
+        (SELECT SUM(f.price * oi.quantity) FROM order_items oi JOIN foods f ON oi.food_id = f.id WHERE oi.order_id = o.id) as total
+      FROM orders o 
+      ORDER BY created_at DESC 
+      LIMIT 5
+    `);
+    const categoryStats = await db.query(`
+      SELECT category, COUNT(*) as count, AVG(price) as avg_price 
+      FROM foods 
+      GROUP BY category 
+      ORDER BY category
+    `);
+
+    res.json({
+      success: true,
+      summary: {
+        totalFoods: parseInt(foods.rows[0].count),
+        totalOrders: parseInt(orders.rows[0].count),
+        totalOrderItems: parseInt(orderItems.rows[0].count)
+      },
+      categoryStats: categoryStats.rows,
+      recentOrders: recentOrders.rows
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ======================
    WEBHOOK VERIFICATION
 ====================== */
 app.get('/webhook', (req, res) => {
