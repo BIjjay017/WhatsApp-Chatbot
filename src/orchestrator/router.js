@@ -363,17 +363,60 @@ const toolHandlers = {
           }
         };
       }
-    } else {
+    } else if (action === 'cancel_confirm') {
+      // User confirmed cancellation
+      const cart = context.cart || [];
+      const itemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+      
       await sendWhatsAppMessage(
         userId,
-        `❌ Order Cancelled\n\nNo worries! Your order has been cancelled. Feel free to browse our menu again whenever you're ready.\n\nType "menu" to start a new order! 🍽️`
+        `❌ Order Cancelled\n\n${itemCount} item(s) removed from cart.\n\nNo worries! Feel free to browse our menu again whenever you're ready.\n\nType "menu" to start a new order! 🍽️`
       );
       return {
         reply: null,
         updatedContext: { 
-          stage: 'order_cancelled',
+          stage: 'initial',
           lastAction: 'order_cancelled',
           cart: []
+        }
+      };
+    } else {
+      // Ask for cancellation confirmation first
+      const cart = context.cart || [];
+      const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      const itemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+      const buttons = [
+        {
+          type: 'reply',
+          reply: {
+            id: 'confirm_cancel',
+            title: 'Yes, Cancel ❌'
+          }
+        },
+        {
+          type: 'reply',
+          reply: {
+            id: 'back_to_cart',
+            title: 'No, Go Back 🔙'
+          }
+        }
+      ];
+
+      await sendWhatsAppButtonMessage(
+        userId,
+        '⚠️ Cancel Order?',
+        `Are you sure you want to cancel?\n\n🛒 Cart: ${itemCount} item(s)\n💰 Total: Rs.${total}\n\nThis will remove all items from your cart.`,
+        'Please confirm',
+        buttons
+      );
+
+      return {
+        reply: null,
+        updatedContext: { 
+          ...context,
+          stage: 'confirming_cancel',
+          lastAction: 'ask_cancel_confirmation'
         }
       };
     }
@@ -383,20 +426,52 @@ const toolHandlers = {
   process_payment: async (args, userId, context) => {
     const { method } = args;
     const orderId = context.orderId;
+    const cart = context.cart || [];
+    const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
     try {
       if (orderId) {
         await restaurantTools.selectPayment(orderId, method);
       }
 
-      const paymentText = method === 'COD' 
-        ? 'Cash on Delivery' 
-        : 'Online Payment';
+      if (method === 'ONLINE') {
+        // Show online payment details with dummy values
+        await sendWhatsAppMessage(
+          userId,
+          `💳 *Online Payment Details*\n\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `📱 *eSewa*\n` +
+          `   ID: 9800000001\n` +
+          `   Name: Momo House Pvt Ltd\n\n` +
+          `📱 *Khalti*\n` +
+          `   ID: 9800000002\n` +
+          `   Name: Momo House\n\n` +
+          `🏦 *Bank Transfer*\n` +
+          `   Bank: Nepal Bank Ltd\n` +
+          `   A/C: 0123456789012\n` +
+          `   Name: Momo House Pvt Ltd\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+          `💰 *Amount to Pay: Rs.${total}*\n\n` +
+          `📝 Please send payment screenshot to confirm.\n` +
+          `Order ID: #${orderId || 'MH' + Date.now().toString().slice(-6)}`
+        );
 
-      await sendWhatsAppMessage(
-        userId,
-        `✅ Order Confirmed!\n\n💳 Payment: ${paymentText}\n\nThank you for your order! Your delicious food is being prepared and will be delivered in 30-40 minutes.\n\nOrder ID: #${orderId || 'MH' + Date.now().toString().slice(-6)}\n\nEnjoy your meal! 🥟`
-      );
+        await sendWhatsAppMessage(
+          userId,
+          `✅ Order Placed!\n\nYour order will be prepared once payment is confirmed.\n\nDelivery: 30-40 minutes after confirmation.\n\nThank you for ordering! 🥟`
+        );
+      } else {
+        // Cash on Delivery
+        await sendWhatsAppMessage(
+          userId,
+          `✅ Order Confirmed!\n\n` +
+          `💳 Payment: Cash on Delivery\n` +
+          `💰 Amount: Rs.${total}\n\n` +
+          `Your delicious food is being prepared and will be delivered in 30-40 minutes.\n\n` +
+          `Order ID: #${orderId || 'MH' + Date.now().toString().slice(-6)}\n\n` +
+          `Please keep Rs.${total} ready!\n\nEnjoy your meal! 🥟`
+        );
+      }
 
       return {
         reply: null,
@@ -414,6 +489,60 @@ const toolHandlers = {
         reply: null,
         updatedContext: { stage: 'order_complete', cart: [] }
       };
+    }
+  },
+
+  // Show order history
+  show_order_history: async (args, userId, context) => {
+    try {
+      const orders = await restaurantTools.getOrderHistory(userId, 5);
+
+      if (orders.length === 0) {
+        await sendWhatsAppMessage(
+          userId,
+          `📋 *Order History*\n\nYou haven't placed any orders yet!\n\nType "menu" to start your first order! 🍽️`
+        );
+        return { reply: null, updatedContext: context };
+      }
+
+      let historyText = `📋 *Your Order History*\n\n`;
+      
+      for (const order of orders) {
+        const statusEmoji = {
+          'created': '🆕',
+          'confirmed': '✅',
+          'preparing': '👨‍🍳',
+          'delivered': '📦',
+          'completed': '✔️',
+          'cancelled': '❌'
+        }[order.status] || '📝';
+
+        const date = new Date(order.created_at).toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+
+        historyText += `${statusEmoji} *Order #${order.id}*\n`;
+        historyText += `   📅 ${date}\n`;
+        historyText += `   🛒 ${order.item_count} item(s) | Rs.${parseFloat(order.total).toFixed(0)}\n`;
+        historyText += `   💳 ${order.payment_method || 'Pending'}\n`;
+        historyText += `   Status: ${order.status.toUpperCase()}\n\n`;
+      }
+
+      historyText += `\nType "menu" to place a new order! 🍽️`;
+
+      await sendWhatsAppMessage(userId, historyText);
+
+      return {
+        reply: null,
+        updatedContext: { ...context, lastAction: 'show_order_history' }
+      };
+    } catch (error) {
+      console.error('Error fetching order history:', error);
+      await sendWhatsAppMessage(userId, "Sorry, couldn't load your order history. Please try again.");
+      return { reply: null, updatedContext: context };
     }
   },
 
@@ -501,6 +630,14 @@ async function routeIntent({ text, context, userId, interactiveReply }) {
       return await toolHandlers.process_order_response({ action: 'cancelled' }, userId, context);
     }
 
+    // Cancel confirmation flow
+    if (id === 'confirm_cancel') {
+      return await toolHandlers.process_order_response({ action: 'cancel_confirm' }, userId, context);
+    }
+    if (id === 'back_to_cart') {
+      return await toolHandlers.show_cart_options({}, userId, context);
+    }
+
     // Payment method selection
     if (id === 'pay_cod') {
       return await toolHandlers.process_payment({ method: 'COD' }, userId, context);
@@ -508,6 +645,12 @@ async function routeIntent({ text, context, userId, interactiveReply }) {
     if (id === 'pay_online') {
       return await toolHandlers.process_payment({ method: 'ONLINE' }, userId, context);
     }
+  }
+
+  // Check for order history keywords
+  const lowerText = text?.toLowerCase() || '';
+  if (lowerText.includes('order history') || lowerText.includes('my orders') || lowerText.includes('past orders') || lowerText.includes('previous orders')) {
+    return await toolHandlers.show_order_history({}, userId, context);
   }
 
   // Use LLM to detect intent and decide which tool to call

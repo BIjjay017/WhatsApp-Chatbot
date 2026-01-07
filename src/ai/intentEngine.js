@@ -85,6 +85,18 @@ const availableTools = [
         required: ["message"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "show_order_history",
+      description: "Show the user's past orders and order history. Use when user asks about their previous orders, order history, past orders, or wants to see what they ordered before.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: []
+      }
+    }
   }
 ];
 
@@ -100,6 +112,7 @@ CONVERSATION FLOW:
 2. When user selects "Momos" or asks about momos → call show_momo_varieties (shows momo carousel)
 3. When user selects items to order or says "order" → call confirm_order with the items
 4. When user confirms/cancels order → call process_order_response
+5. When user asks about their orders, order history, past orders → call show_order_history
 
 CONTEXT AWARENESS:
 - Current conversation state: ${JSON.stringify(conversationContext)}
